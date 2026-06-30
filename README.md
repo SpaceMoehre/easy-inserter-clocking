@@ -1,6 +1,6 @@
 # Easy Inserter Clocking
 
-A small mod for **Factorio 1.1 and 2.0** that makes inserter clocking easy.
+A small mod for **Factorio 1.1, 2.0, and 2.1** that makes inserter clocking easy.
 
 Instead of hand-building combinator clocks every time you need an inserter to
 move items at a precise, throttled rate, you tell the mod **which item**, **how
@@ -77,9 +77,10 @@ name one), so run:
 ./build.sh
 ```
 
-This writes one zip per supported version into `dist/` — `factorio_version 1.1`
-and `factorio_version 2.0` — ready to upload to the mod portal. Edit the
-`TARGETS` list in `build.sh` to add or bump versions.
+This writes one zip per supported version into `dist/` — `factorio_version` 1.1,
+2.0, and 2.1 — ready to upload to the mod portal. (2.0 and 2.1 share the same
+blueprint API, so they come from the same code path.) Edit the `TARGETS` list in
+`build.sh` to add or bump versions.
 
 ## License
 
