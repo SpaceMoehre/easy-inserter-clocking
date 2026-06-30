@@ -1,5 +1,21 @@
 local mod_gui = require("mod-gui")
 
+-- Persistent per-player preferences (chosen inserter + stack size). Factorio 2.0
+-- renamed the saved `global` table to `storage`; `storage or global` resolves to
+-- whichever exists -- the short-circuit means `global` is only read on 1.1, where
+-- it is still the valid persisted table.
+local function player_prefs(player)
+    local root = storage or global
+    root.eic = root.eic or {}
+    root.eic.players = root.eic.players or {}
+    local prefs = root.eic.players[player.index]
+    if not prefs then
+        prefs = {inserter = "fast-inserter", stack = 12}
+        root.eic.players[player.index] = prefs
+    end
+    return prefs
+end
+
 -- Initialize the top-left toggle button
 local function init_gui(player)
     local button_flow = mod_gui.get_button_flow(player)
@@ -36,9 +52,21 @@ local function toggle_main_frame(player)
             direction = "vertical"
         }
 
+        local prefs = player_prefs(player)
+
         local flow1 = frame.add{type = "flow", direction = "horizontal"}
         flow1.add{type = "label", caption = {"eic.target-item"}}
         flow1.add{type = "choose-elem-button", elem_type = "item", name = "eic_item_select"}
+
+        local flow_ins = frame.add{type = "flow", direction = "horizontal"}
+        flow_ins.add{type = "label", caption = {"eic.inserter"}}
+        local inserter_select = flow_ins.add{
+            type = "choose-elem-button",
+            name = "eic_inserter_select",
+            elem_type = "entity",
+            elem_filters = {{filter = "type", type = "inserter"}},
+        }
+        inserter_select.elem_value = prefs.inserter -- restore the saved choice
 
         local flow2 = frame.add{type = "flow", direction = "horizontal"}
         flow2.add{type = "label", caption = {"eic.items-count"}}
@@ -54,7 +82,7 @@ local function toggle_main_frame(player)
 
         local flow3 = frame.add{type = "flow", direction = "horizontal"}
         flow3.add{type = "label", caption = {"eic.stack-size"}}
-        local stack_input = flow3.add{type = "textfield", name = "eic_stack_input", text = "12"}
+        local stack_input = flow3.add{type = "textfield", name = "eic_stack_input", text = tostring(prefs.stack)}
         stack_input.numeric = true
 
         local flow4 = frame.add{type = "flow", direction = "horizontal"}
@@ -73,7 +101,7 @@ end
 
 -- Factorio 2.0 encoding: per-entity `wires`, constant combinator `sections`,
 -- decider `conditions`/`outputs`.
-local function build_clock_entities_v2(item, increment, modulo, decider_constant)
+local function build_clock_entities_v2(item, increment, modulo, decider_constant, inserter, stack)
     local wc = defines.wire_connector_id
     return {
         { -- 1: constant combinator, source of the per-tick increment
@@ -143,13 +171,30 @@ local function build_clock_entities_v2(item, increment, modulo, decider_constant
                 },
             },
         },
+        { -- 4: the inserter, pre-wired to the decider output and gated on the item signal
+            entity_number = 4,
+            name = inserter,
+            position = {x = 2, y = -2},
+            override_stack_size = stack,
+            control_behavior = {
+                circuit_enabled = true,
+                circuit_condition = {
+                    first_signal = {type = "item", name = item},
+                    comparator = ">",
+                    constant = 0,
+                },
+            },
+            wires = {
+                {4, wc.circuit_green, 3, wc.combinator_output_green},
+            },
+        },
     }
 end
 
 -- Factorio 1.1 encoding: `connections` keyed by connection point with
 -- {entity_id, circuit_id} targets (circuit_id 1 = input, 2 = output), flat
 -- constant combinator `filters`, single `decider_conditions`.
-local function build_clock_entities_v1(item, increment, modulo, decider_constant)
+local function build_clock_entities_v1(item, increment, modulo, decider_constant, inserter, stack)
     return {
         { -- 1: constant combinator, source of the per-tick increment
             entity_number = 1,
@@ -196,6 +241,23 @@ local function build_clock_entities_v1(item, increment, modulo, decider_constant
             },
             connections = {
                 ["1"] = {green = {{entity_id = 2, circuit_id = 2}}},
+                ["2"] = {green = {{entity_id = 4, circuit_id = 1}}},
+            },
+        },
+        { -- 4: the inserter, pre-wired to the decider output and gated on the item signal
+            entity_number = 4,
+            name = inserter,
+            position = {x = 2, y = -2},
+            override_stack_size = stack,
+            control_behavior = {
+                circuit_condition = {
+                    first_signal = {type = "item", name = item},
+                    comparator = ">",
+                    constant = 0,
+                },
+            },
+            connections = {
+                ["1"] = {green = {{entity_id = 3, circuit_id = 2}}},
             },
         },
     }
@@ -203,11 +265,11 @@ end
 
 -- defines.wire_connector_id only exists in Factorio 2.0+, so it tells the two
 -- blueprint encodings apart at runtime.
-local function build_clock_entities(item, increment, modulo, decider_constant)
+local function build_clock_entities(item, increment, modulo, decider_constant, inserter, stack)
     if defines.wire_connector_id then
-        return build_clock_entities_v2(item, increment, modulo, decider_constant)
+        return build_clock_entities_v2(item, increment, modulo, decider_constant, inserter, stack)
     else
-        return build_clock_entities_v1(item, increment, modulo, decider_constant)
+        return build_clock_entities_v1(item, increment, modulo, decider_constant, inserter, stack)
     end
 end
 
@@ -233,6 +295,7 @@ script.on_event(defines.events.on_gui_click, function(event)
         local frame = element.parent
 
         local item_select = find_child(frame, "eic_item_select").elem_value
+        local inserter_select = find_child(frame, "eic_inserter_select").elem_value
         local count_str = find_child(frame, "eic_count_input").text
         local period_str = find_child(frame, "eic_period_input").text
         local stack_str = find_child(frame, "eic_stack_input").text
@@ -240,6 +303,11 @@ script.on_event(defines.events.on_gui_click, function(event)
 
         if not item_select then
             player.print({"gui-alert.missing-item"})
+            return
+        end
+
+        if not inserter_select then
+            player.print({"eic-msg.missing-inserter"})
             return
         end
 
@@ -251,6 +319,12 @@ script.on_event(defines.events.on_gui_click, function(event)
             player.print({"eic-msg.invalid-input"})
             return
         end
+        stack = math.floor(stack)
+
+        -- Remember this player's inserter + stack choice for next time
+        local prefs = player_prefs(player)
+        prefs.inserter = inserter_select
+        prefs.stack = stack
 
         -- "count items every period seconds" -> items per second
         local rate = count / period
@@ -275,12 +349,31 @@ script.on_event(defines.events.on_gui_click, function(event)
         local cursor = player.cursor_stack
         if cursor and cursor.can_set_stack({name = "blueprint"}) then
             cursor.set_stack({name = "blueprint"})
-            cursor.set_blueprint_entities(build_clock_entities(item_select, increment, modulo, decider_constant))
+            cursor.set_blueprint_entities(build_clock_entities(item_select, increment, modulo, decider_constant, inserter_select, stack))
 
             player.print({"eic-msg.generated", stack})
             toggle_main_frame(player) -- close the UI
         else
             player.print({"eic-msg.clear-cursor"})
+        end
+    end
+end)
+
+-- Persist preference changes immediately as the player makes them, so the choice
+-- survives even if they close the window without generating a blueprint.
+script.on_event(defines.events.on_gui_elem_changed, function(event)
+    local element = event.element
+    if element and element.valid and element.name == "eic_inserter_select" then
+        player_prefs(game.players[event.player_index]).inserter = element.elem_value
+    end
+end)
+
+script.on_event(defines.events.on_gui_text_changed, function(event)
+    local element = event.element
+    if element and element.valid and element.name == "eic_stack_input" then
+        local n = tonumber(element.text)
+        if n and n > 0 then
+            player_prefs(game.players[event.player_index]).stack = math.floor(n)
         end
     end
 end)
