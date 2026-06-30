@@ -64,12 +64,16 @@ local function toggle_main_frame(player)
     end
 end
 
--- Build the 2.0-format clocking blueprint for the given parameters.
--- Counter: a constant combinator (+increment/tick) feeds an arithmetic combinator
--- doing `C % modulo` with its output looped back to its input, producing a sawtooth
--- on signal-C. A decider emits the chosen item signal while C < decider_constant,
--- which is the enable window for the inserter.
-local function build_clock_entities(item, increment, modulo, decider_constant)
+-- The clock is the same in both game versions: a constant combinator (+increment
+-- per tick) feeds an arithmetic combinator doing `C % modulo` with its output
+-- looped back to its own input, producing a sawtooth on signal-C. A decider emits
+-- the chosen item signal while C <= decider_constant -- the inserter enable window.
+-- Only the blueprint *encoding* differs between 1.1 and 2.0, so we branch on a
+-- feature that only exists in 2.0 (the wire-connector enum) and build accordingly.
+
+-- Factorio 2.0 encoding: per-entity `wires`, constant combinator `sections`,
+-- decider `conditions`/`outputs`.
+local function build_clock_entities_v2(item, increment, modulo, decider_constant)
     local wc = defines.wire_connector_id
     return {
         { -- 1: constant combinator, source of the per-tick increment
@@ -140,6 +144,71 @@ local function build_clock_entities(item, increment, modulo, decider_constant)
             },
         },
     }
+end
+
+-- Factorio 1.1 encoding: `connections` keyed by connection point with
+-- {entity_id, circuit_id} targets (circuit_id 1 = input, 2 = output), flat
+-- constant combinator `filters`, single `decider_conditions`.
+local function build_clock_entities_v1(item, increment, modulo, decider_constant)
+    return {
+        { -- 1: constant combinator, source of the per-tick increment
+            entity_number = 1,
+            name = "constant-combinator",
+            position = {x = 0, y = 0},
+            control_behavior = {
+                filters = {
+                    {signal = {type = "virtual", name = "signal-C"}, count = increment, index = 1},
+                },
+            },
+            connections = {
+                ["1"] = {green = {{entity_id = 2, circuit_id = 1}}},
+            },
+        },
+        { -- 2: arithmetic combinator, the looping `C % modulo` counter
+            entity_number = 2,
+            name = "arithmetic-combinator",
+            position = {x = 1, y = 0},
+            control_behavior = {
+                arithmetic_conditions = {
+                    first_signal = {type = "virtual", name = "signal-C"},
+                    operation = "%",
+                    second_constant = modulo,
+                    output_signal = {type = "virtual", name = "signal-C"},
+                },
+            },
+            connections = {
+                ["1"] = {green = {{entity_id = 1, circuit_id = 1}, {entity_id = 2, circuit_id = 2}}},
+                ["2"] = {green = {{entity_id = 2, circuit_id = 1}, {entity_id = 3, circuit_id = 1}}},
+            },
+        },
+        { -- 3: decider combinator, emits the item signal during the enable window
+            entity_number = 3,
+            name = "decider-combinator",
+            position = {x = 2, y = 0},
+            control_behavior = {
+                decider_conditions = {
+                    first_signal = {type = "virtual", name = "signal-C"},
+                    comparator = "<=",
+                    constant = decider_constant,
+                    output_signal = {type = "item", name = item},
+                    copy_count_from_input = false,
+                },
+            },
+            connections = {
+                ["1"] = {green = {{entity_id = 2, circuit_id = 2}}},
+            },
+        },
+    }
+end
+
+-- defines.wire_connector_id only exists in Factorio 2.0+, so it tells the two
+-- blueprint encodings apart at runtime.
+local function build_clock_entities(item, increment, modulo, decider_constant)
+    if defines.wire_connector_id then
+        return build_clock_entities_v2(item, increment, modulo, decider_constant)
+    else
+        return build_clock_entities_v1(item, increment, modulo, decider_constant)
+    end
 end
 
 -- Find a named descendant; frame[name] only matches direct children, but our
