@@ -12,7 +12,7 @@ FILES=(control.lua README.md LICENSE thumbnail.png)
 # portal expects each new upload to be higher than the previous one, so keep them
 # on a single ascending line regardless of which game version they target.
 # 2.0 and 2.1 share the same blueprint API, so control.lua's v2 path serves both.
-TARGETS=("1.1:1.0.0" "2.0:1.0.1" "2.1:1.0.2")
+TARGETS=("1.1:0.9.0" "2.0:1.0.1" "2.1:1.0.2")
 
 build() {
     local fver="${1%%:*}" mver="${1##*:}"
