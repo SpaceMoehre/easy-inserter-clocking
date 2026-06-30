@@ -1,0 +1,9 @@
+{
+  "name": "easy-inserter-clocking",
+  "version": "1.0.0",
+  "title": "Easy Inserter Clocking",
+  "author": "You",
+  "factorio_version": "2.0",
+  "dependencies": ["base >= 2.0.0"],
+  "description": "Provides a UI to easily calculate inserter clocking combinators and generates a blueprint directly into your cursor."
+}

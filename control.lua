@@ -1,0 +1,217 @@
+local mod_gui = require("mod-gui")
+
+-- Initialize the top-left toggle button
+local function init_gui(player)
+    local button_flow = mod_gui.get_button_flow(player)
+    if not button_flow.eic_toggle_button then
+        button_flow.add{
+            type = "button",
+            name = "eic_toggle_button",
+            caption = "EIC",
+            tooltip = {"eic.toggle-tooltip"}
+        }
+    end
+end
+
+script.on_init(function()
+    for _, player in pairs(game.players) do
+        init_gui(player)
+    end
+end)
+
+script.on_event(defines.events.on_player_created, function(event)
+    init_gui(game.players[event.player_index])
+end)
+
+-- Toggle the main calculation window
+local function toggle_main_frame(player)
+    local frame_flow = mod_gui.get_frame_flow(player)
+    if frame_flow.eic_main_frame then
+        frame_flow.eic_main_frame.destroy()
+    else
+        local frame = frame_flow.add{
+            type = "frame",
+            name = "eic_main_frame",
+            caption = {"eic.title"},
+            direction = "vertical"
+        }
+
+        local flow1 = frame.add{type = "flow", direction = "horizontal"}
+        flow1.add{type = "label", caption = {"eic.target-item"}}
+        flow1.add{type = "choose-elem-button", elem_type = "item", name = "eic_item_select"}
+
+        local flow2 = frame.add{type = "flow", direction = "horizontal"}
+        flow2.add{type = "label", caption = {"eic.items-count"}}
+        local count_input = flow2.add{type = "textfield", name = "eic_count_input", text = "1"}
+        count_input.numeric = true
+        count_input.allow_decimal = true
+
+        local flow2b = frame.add{type = "flow", direction = "horizontal"}
+        flow2b.add{type = "label", caption = {"eic.timeframe"}}
+        local period_input = flow2b.add{type = "textfield", name = "eic_period_input", text = "0.5"}
+        period_input.numeric = true
+        period_input.allow_decimal = true
+
+        local flow3 = frame.add{type = "flow", direction = "horizontal"}
+        flow3.add{type = "label", caption = {"eic.stack-size"}}
+        local stack_input = flow3.add{type = "textfield", name = "eic_stack_input", text = "12"}
+        stack_input.numeric = true
+
+        local flow4 = frame.add{type = "flow", direction = "horizontal"}
+        flow4.add{type = "checkbox", name = "eic_belt_checkbox", caption = {"eic.pickup-from-belt"}, state = false}
+
+        frame.add{type = "button", name = "eic_get_bp_button", caption = {"eic.create-blueprint"}}
+    end
+end
+
+-- Build the 2.0-format clocking blueprint for the given parameters.
+-- Counter: a constant combinator (+increment/tick) feeds an arithmetic combinator
+-- doing `C % modulo` with its output looped back to its input, producing a sawtooth
+-- on signal-C. A decider emits the chosen item signal while C < decider_constant,
+-- which is the enable window for the inserter.
+local function build_clock_entities(item, increment, modulo, decider_constant)
+    local wc = defines.wire_connector_id
+    return {
+        { -- 1: constant combinator, source of the per-tick increment
+            entity_number = 1,
+            name = "constant-combinator",
+            position = {x = 0, y = 0},
+            control_behavior = {
+                sections = {
+                    sections = {
+                        {
+                            index = 1,
+                            filters = {
+                                {
+                                    index = 1,
+                                    type = "virtual",
+                                    name = "signal-C",
+                                    quality = "normal",
+                                    comparator = "=",
+                                    count = increment,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            wires = {
+                {1, wc.circuit_green, 2, wc.combinator_input_green},
+            },
+        },
+        { -- 2: arithmetic combinator, the looping `C % modulo` counter
+            entity_number = 2,
+            name = "arithmetic-combinator",
+            position = {x = 1, y = 0},
+            control_behavior = {
+                arithmetic_conditions = {
+                    first_signal = {type = "virtual", name = "signal-C"},
+                    operation = "%",
+                    second_constant = modulo,
+                    output_signal = {type = "virtual", name = "signal-C"},
+                },
+            },
+            wires = {
+                -- output looped back to input (the counter), and output to the decider input
+                {2, wc.combinator_output_green, 2, wc.combinator_input_green},
+                {2, wc.combinator_output_green, 3, wc.combinator_input_green},
+            },
+        },
+        { -- 3: decider combinator, emits the item signal during the enable window
+            entity_number = 3,
+            name = "decider-combinator",
+            position = {x = 2, y = 0},
+            control_behavior = {
+                decider_conditions = {
+                    conditions = {
+                        {
+                            first_signal = {type = "virtual", name = "signal-C"},
+                            comparator = "<=",
+                            constant = decider_constant,
+                        },
+                    },
+                    outputs = {
+                        {
+                            signal = {type = "item", name = item},
+                            copy_count_from_input = false,
+                        },
+                    },
+                },
+            },
+        },
+    }
+end
+
+-- Find a named descendant; frame[name] only matches direct children, but our
+-- inputs live inside per-row flows, so we have to recurse.
+local function find_child(root, name)
+    if root.name == name then return root end
+    for _, child in pairs(root.children) do
+        local found = find_child(child, name)
+        if found then return found end
+    end
+end
+
+-- Handle GUI clicks
+script.on_event(defines.events.on_gui_click, function(event)
+    local player = game.players[event.player_index]
+    local element = event.element
+
+    if element.name == "eic_toggle_button" then
+        toggle_main_frame(player)
+
+    elseif element.name == "eic_get_bp_button" then
+        local frame = element.parent
+
+        local item_select = find_child(frame, "eic_item_select").elem_value
+        local count_str = find_child(frame, "eic_count_input").text
+        local period_str = find_child(frame, "eic_period_input").text
+        local stack_str = find_child(frame, "eic_stack_input").text
+        local is_belt = find_child(frame, "eic_belt_checkbox").state
+
+        if not item_select then
+            player.print({"gui-alert.missing-item"})
+            return
+        end
+
+        local count = tonumber(count_str)
+        local period = tonumber(period_str)
+        local stack = tonumber(stack_str)
+
+        if not count or count <= 0 or not period or period <= 0 or not stack or stack <= 0 then
+            player.print({"eic-msg.invalid-input"})
+            return
+        end
+
+        -- "count items every period seconds" -> items per second
+        local rate = count / period
+
+        -- The Math (fixed-point x100 for sub-tick precision on the rate)
+        local increment = math.floor(rate * 100)
+        local modulo = stack * 60 * 100
+
+        -- Chest-to-chest only needs a 1-tick pulse to latch a swing. Belt pickup
+        -- needs the inserter enabled long enough to fill its hand (~46 ticks).
+        local active_ticks = is_belt and 46 or 1
+        local decider_constant = active_ticks * increment
+
+        -- If the enable window is as long as (or longer than) the whole clock period,
+        -- the inserter would never switch off, so the clock can't throttle anything.
+        if decider_constant >= modulo then
+            player.print({"eic-msg.rate-too-high"})
+            return
+        end
+
+        -- Construct the Blueprint in the player's cursor
+        local cursor = player.cursor_stack
+        if cursor and cursor.can_set_stack({name = "blueprint"}) then
+            cursor.set_stack({name = "blueprint"})
+            cursor.set_blueprint_entities(build_clock_entities(item_select, increment, modulo, decider_constant))
+
+            player.print({"eic-msg.generated", stack})
+            toggle_main_frame(player) -- close the UI
+        else
+            player.print({"eic-msg.clear-cursor"})
+        end
+    end
+end)
