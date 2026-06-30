@@ -367,16 +367,34 @@ script.on_event(defines.events.on_gui_click, function(event)
             return
         end
 
-        -- Construct the Blueprint in the player's cursor
-        local cursor = player.cursor_stack
-        if cursor and cursor.can_set_stack({name = "blueprint"}) then
-            cursor.set_stack({name = "blueprint"})
-            cursor.set_blueprint_entities(build_clock_entities(item_select, increment, modulo, decider_constant, inserter_select, stack))
+        local entities = build_clock_entities(item_select, increment, modulo, decider_constant, inserter_select, stack)
+
+        if player.add_to_clipboard then
+            -- Put the setup on the copy/paste clipboard and activate paste: it lands
+            -- in the cursor as a temporary paste, so nothing persistent is added to
+            -- the inventory. A scratch inventory just holds the blueprint long enough
+            -- to copy it into the clipboard, then is destroyed.
+            local temp = game.create_inventory(1)
+            temp[1].set_stack({name = "blueprint"})
+            temp[1].set_blueprint_entities(entities)
+            player.add_to_clipboard(temp[1])
+            player.activate_paste()
+            temp.destroy()
 
             player.print({"eic-msg.generated", stack})
             toggle_main_frame(player) -- close the UI
         else
-            player.print({"eic-msg.clear-cursor"})
+            -- Fallback for engines without the clipboard API: a real cursor blueprint.
+            local cursor = player.cursor_stack
+            if cursor and cursor.can_set_stack({name = "blueprint"}) then
+                cursor.set_stack({name = "blueprint"})
+                cursor.set_blueprint_entities(entities)
+
+                player.print({"eic-msg.generated", stack})
+                toggle_main_frame(player) -- close the UI
+            else
+                player.print({"eic-msg.clear-cursor"})
+            end
         end
     end
 end)
