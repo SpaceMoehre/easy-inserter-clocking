@@ -16,6 +16,28 @@ local function player_prefs(player)
     return prefs
 end
 
+-- Maximum hand stack size of an inserter prototype for the given force, matching
+-- the game's own formula: 1 + the inserter's built-in bonus + the applicable
+-- research bonus (bulk inserters scale with bulk capacity research, normal ones
+-- with the inserter capacity research). Wrapped in pcall so the differing 1.1
+-- prototype API can't crash it -- it just falls back to nil there.
+local function inserter_max_stack(name, force)
+    local protos = (prototypes and prototypes.entity) or game.entity_prototypes
+    local proto = protos and protos[name]
+    if not proto then return nil end
+    local ok, result = pcall(function()
+        local force_bonus = 0
+        if proto.bulk then
+            force_bonus = force.bulk_inserter_capacity_bonus or 0
+        elseif proto.uses_inserter_stack_size_bonus ~= false then
+            force_bonus = force.inserter_stack_size_bonus or 0
+        end
+        return math.max(1, math.floor(1 + (proto.inserter_stack_size_bonus or 0) + force_bonus))
+    end)
+    if ok then return result end
+    return nil
+end
+
 -- Initialize the top-left toggle button
 local function init_gui(player)
     local button_flow = mod_gui.get_button_flow(player)
@@ -364,7 +386,19 @@ end)
 script.on_event(defines.events.on_gui_elem_changed, function(event)
     local element = event.element
     if element and element.valid and element.name == "eic_inserter_select" then
-        player_prefs(game.players[event.player_index]).inserter = element.elem_value
+        local player = game.players[event.player_index]
+        local prefs = player_prefs(player)
+        prefs.inserter = element.elem_value
+
+        -- Selecting an inserter snaps the stack size to that inserter's max hand size.
+        if element.elem_value then
+            local max_stack = inserter_max_stack(element.elem_value, player.force)
+            if max_stack then
+                prefs.stack = max_stack
+                local stack_field = find_child(element.parent.parent, "eic_stack_input")
+                if stack_field then stack_field.text = tostring(max_stack) end
+            end
+        end
     end
 end)
 
